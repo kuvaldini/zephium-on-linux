@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+#[cfg(not(target_os = "linux"))]
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use zephium_core::ports::store::Store;
 
@@ -75,11 +76,13 @@ pub struct Trigger(Mutex<State>);
 #[derive(Default)]
 struct State {
     shortcut: String,
+    #[cfg(not(target_os = "linux"))]
     registered: Option<Shortcut>,
     recording: bool,
     double_tap: DoubleTap,
 }
 
+#[cfg(not(target_os = "linux"))]
 /// Checks a recorded accelerator before anything is unregistered, so a bad
 /// choice never costs the working one.
 pub fn validate(accelerator: &str) -> Result<Shortcut, Rejection> {
@@ -108,6 +111,12 @@ pub fn validate(accelerator: &str) -> Result<Shortcut, Rejection> {
     Ok(shortcut)
 }
 
+#[cfg(target_os = "linux")]
+pub fn validate(_accelerator: &str) -> Result<(), Rejection> {
+    Err(Rejection::Unsupported)
+}
+
+#[cfg(not(target_os = "linux"))]
 fn character(key: Code) -> bool {
     use Code::*;
     !matches!(
@@ -149,6 +158,7 @@ fn character(key: Code) -> bool {
     )
 }
 
+#[cfg(not(target_os = "linux"))]
 fn system(mods: Modifiers, key: Code) -> bool {
     let (cmd, ctrl, alt, shift) = (
         Modifiers::SUPER,
@@ -182,6 +192,8 @@ fn system(mods: Modifiers, key: Code) -> bool {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+#[cfg(not(target_os = "linux"))]
 fn register(app: &AppHandle, shortcut: &Shortcut) -> bool {
     let registered = app
         .global_shortcut()
@@ -196,6 +208,8 @@ fn register(app: &AppHandle, shortcut: &Shortcut) -> bool {
     registered.is_ok()
 }
 
+#[cfg(not(target_os = "linux"))]
+#[cfg(not(target_os = "linux"))]
 fn unregister(app: &AppHandle, shortcut: &Shortcut) {
     let _ = app.global_shortcut().unregister(*shortcut);
 }
@@ -219,10 +233,11 @@ pub fn install(app: &AppHandle, keymap_override: Option<String>) {
     let shortcut = setting(SHORTCUT_KEY)
         .or(keymap_override)
         .unwrap_or_else(|| DEFAULT.into());
-    let parsed = Shortcut::from_str(&shortcut)
+    #[cfg(not(target_os = "linux"))]
+    let registered = Shortcut::from_str(&shortcut)
         .ok()
-        .or_else(|| Shortcut::from_str(DEFAULT).ok());
-    let registered = parsed.filter(|parsed| register(app, parsed));
+        .or_else(|| Shortcut::from_str(DEFAULT).ok())
+        .filter(|parsed| register(app, parsed));
     let double_tap = match setting(DOUBLE_TAP_KEY).as_deref() {
         Some("command") => DoubleTap::Command,
         Some("option") => DoubleTap::Option,
@@ -231,7 +246,10 @@ pub fn install(app: &AppHandle, keymap_override: Option<String>) {
     if let Some(trigger) = app.try_state::<Trigger>() {
         let mut state = trigger.0.lock().unwrap_or_else(|e| e.into_inner());
         state.shortcut = shortcut;
-        state.registered = registered;
+        #[cfg(not(target_os = "linux"))]
+        {
+            state.registered = registered;
+        }
         state.double_tap = double_tap;
     }
     #[cfg(target_os = "macos")]
@@ -243,11 +261,11 @@ pub fn snapshot(app: &AppHandle) -> LauncherTrigger {
         || (DEFAULT.to_owned(), false, DoubleTap::Off),
         |trigger| {
             let state = trigger.0.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                state.shortcut.clone(),
-                state.registered.is_some() || state.recording,
-                state.double_tap,
-            )
+            #[cfg(not(target_os = "linux"))]
+            let registered = state.registered.is_some() || state.recording;
+            #[cfg(target_os = "linux")]
+            let registered = false;
+            (state.shortcut.clone(), registered, state.double_tap)
         },
     );
     #[cfg(target_os = "macos")]
@@ -276,78 +294,90 @@ pub fn set_shortcut(app: &AppHandle, accelerator: &str) -> TriggerChange {
         reason,
         trigger: snapshot(app),
     };
-    if cfg!(target_os = "linux") {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = accelerator;
         return rejected(Rejection::Unsupported);
     }
-    let shortcut = match validate(accelerator) {
-        Ok(shortcut) => shortcut,
-        Err(reason) => return rejected(reason),
-    };
-    let Some(trigger) = app.try_state::<Trigger>() else {
-        return rejected(Rejection::Unavailable);
-    };
-    let previous = {
-        let mut state = trigger.0.lock().unwrap_or_else(|e| e.into_inner());
-        state.recording = false;
-        state.registered.take()
-    };
-    if let Some(previous) = &previous {
-        unregister(app, previous);
-    }
-    if !register(app, &shortcut) {
-        // Put back what worked rather than leave the launcher unreachable.
-        let restored = previous.filter(|previous| register(app, previous));
-        trigger
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .registered = restored;
-        return rejected(Rejection::Unavailable);
-    }
+    #[cfg(not(target_os = "linux"))]
     {
-        let mut state = trigger.0.lock().unwrap_or_else(|e| e.into_inner());
-        state.shortcut = accelerator.to_owned();
-        state.registered = Some(shortcut);
-    }
-    persist(SHORTCUT_KEY, accelerator);
-    TriggerChange::Applied {
-        trigger: snapshot(app),
+        let shortcut = match validate(accelerator) {
+            Ok(shortcut) => shortcut,
+            Err(reason) => return rejected(reason),
+        };
+        let Some(trigger) = app.try_state::<Trigger>() else {
+            return rejected(Rejection::Unavailable);
+        };
+        let previous = {
+            let mut state = trigger.0.lock().unwrap_or_else(|e| e.into_inner());
+            state.recording = false;
+            state.registered.take()
+        };
+        if let Some(previous) = &previous {
+            unregister(app, previous);
+        }
+        if !register(app, &shortcut) {
+            // Put back what worked rather than leave the launcher unreachable.
+            let restored = previous.filter(|previous| register(app, previous));
+            trigger
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .registered = restored;
+            return rejected(Rejection::Unavailable);
+        }
+        {
+            let mut state = trigger.0.lock().unwrap_or_else(|e| e.into_inner());
+            state.shortcut = accelerator.to_owned();
+            state.registered = Some(shortcut);
+        }
+        persist(SHORTCUT_KEY, accelerator);
+        TriggerChange::Applied {
+            trigger: snapshot(app),
+        }
     }
 }
 
 /// While a new shortcut is being recorded the current one must not fire, or
 /// pressing it to re-record would open the launcher instead.
 pub fn recording(app: &AppHandle, active: bool) {
-    let Some(trigger) = app.try_state::<Trigger>() else {
-        return;
-    };
-    let mut state = trigger.0.lock().unwrap_or_else(|e| e.into_inner());
-    if state.recording == active {
-        return;
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (app, active);
     }
-    state.recording = active;
-    let current = state.registered.take();
-    let shortcut = state.shortcut.clone();
-    drop(state);
-    if active {
-        if let Some(current) = &current {
-            unregister(app, current);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Some(trigger) = app.try_state::<Trigger>() else {
+            return;
+        };
+        let mut state = trigger.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.recording == active {
+            return;
         }
+        state.recording = active;
+        let current = state.registered.take();
+        let shortcut = state.shortcut.clone();
+        drop(state);
+        if active {
+            if let Some(current) = &current {
+                unregister(app, current);
+            }
+            trigger
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .registered = current;
+            return;
+        }
+        let restored = Shortcut::from_str(&shortcut)
+            .ok()
+            .filter(|shortcut| register(app, shortcut));
         trigger
             .0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .registered = current;
-        return;
+            .registered = restored;
     }
-    let restored = Shortcut::from_str(&shortcut)
-        .ok()
-        .filter(|shortcut| register(app, shortcut));
-    trigger
-        .0
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .registered = restored;
 }
 
 pub fn set_double_tap(app: &AppHandle, mode: DoubleTap) -> LauncherTrigger {
@@ -382,6 +412,7 @@ pub fn open_accessibility_settings() {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn launcher_shortcuts_need_a_real_modifier() {
         assert!(validate(DEFAULT).is_ok());
@@ -396,6 +427,7 @@ mod tests {
         assert_eq!(validate(""), Err(Rejection::Invalid));
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn app_commands_cannot_be_taken_globally() {
         // Redo, reopen tab and find in every app.
@@ -407,6 +439,12 @@ mod tests {
             assert_eq!(validate(taken), Err(Rejection::AppCommand), "{taken}");
         }
         assert!(validate("CmdOrCtrl+Shift+F5").is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_shortcuts_are_unsupported_on_linux() {
+        assert_eq!(validate(DEFAULT), Err(Rejection::Unsupported));
     }
 
     #[cfg(target_os = "macos")]

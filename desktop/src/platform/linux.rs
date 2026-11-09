@@ -202,8 +202,35 @@ fn install_composition(
     gtk_window.add(&fixed);
 
     let sized_chrome = chrome.clone();
-    fixed.connect_size_allocate(move |_, allocation| {
-        sized_chrome.set_size_request(allocation.width(), allocation.height());
+    let sized_fixed = fixed.clone();
+    fixed.connect_size_allocate(move |fixed, allocation| {
+        let (w, h) = (allocation.width(), allocation.height());
+        if w > 0 && h > 0 {
+            // GtkFixed children keep their requisition unless explicitly
+            // allocated; without this the privileged chrome WebView can remain
+            // 1x1/mapped-off and render blank despite loading its document.
+            sized_fixed.move_(&sized_chrome, 0, 0);
+            sized_chrome.size_allocate(&gtk::Allocation::new(0, 0, w, h));
+            let ca = sized_chrome.allocation();
+            eprintln!(
+                "linux-resize: fixed={}x{} chrome_alloc={}x{}@{},{} visible={} mapped={}",
+                w, h, ca.width(), ca.height(), ca.x(), ca.y(),
+                sized_chrome.is_visible(), sized_chrome.is_mapped()
+            );
+        }
+        let _ = fixed;
+    });
+    // Ensure an initial allocation once the window is realized/mapped.
+    let init_chrome = chrome.clone();
+    let init_fixed = fixed.clone();
+    glib::idle_add_local_once(move || {
+        let a = init_fixed.allocation();
+        if a.width() > 0 && a.height() > 0 {
+            init_fixed.move_(&init_chrome, 0, 0);
+            init_chrome.size_allocate(&gtk::Allocation::new(0, 0, a.width(), a.height()));
+            init_chrome.queue_draw();
+            eprintln!("linux-resize: idle fixed={}x{}", a.width(), a.height());
+        }
     });
     fixed.show_all();
 

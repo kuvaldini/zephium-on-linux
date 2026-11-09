@@ -56,6 +56,10 @@ fn finish_scheme_request_with_empty_status(request: &URISchemeRequest, status: S
   let input = gtk::gio::MemoryInputStream::new();
   let response = URISchemeResponse::new(&input, 0);
   response.set_status(status.as_u16() as u32, None);
+  let headers = MessageHeaders::new(MessageHeadersType::Response);
+  headers.append("Access-Control-Allow-Origin", "*");
+  headers.append("Access-Control-Expose-Headers", "Tauri-Response");
+  response.set_http_headers(headers);
   request.finish_with_response(&response);
 }
 
@@ -137,7 +141,9 @@ impl WebContextImpl {
       context,
       automation,
       app_info: Some(app_info),
-      custom_protocol_admission: InFlightAdmission::new(CUSTOM_PROTOCOL_IN_FLIGHT_LIMIT),
+      // Linux/webkitgtk currently rejects on overflow (no WaitList queue
+      // yet, unlike wkwebview). Raise the in-flight ceiling as a mitigation.
+      custom_protocol_admission: InFlightAdmission::new(CUSTOM_PROTOCOL_IN_FLIGHT_LIMIT * 4),
     }
   }
 
